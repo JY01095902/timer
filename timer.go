@@ -4,53 +4,87 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jy01095902/timer/logger"
 	"github.com/robfig/cron/v3"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
-// type Timer interface {
-// 	Run(fns ...func() error)
-// }
+type Logger interface {
+	Info(args ...interface{})
+}
 
-type TimedFunc func() error
+func NewLogger() *zap.SugaredLogger {
+	config := zap.NewProductionConfig()
+	config.Encoding = "console"
+	config.EncoderConfig.CallerKey = ""
+	config.EncoderConfig.StacktraceKey = ""
+	config.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	l, _ := config.Build()
 
-func (fn TimedFunc) hideError(timerName string) func() {
-	return func() {
-		err := fn()
-		if err != nil {
-			logger.Error(fmt.Sprintf("an error occurred when %s executing function", timerName), "error", err.Error())
-		}
-	}
+	return l.Sugar()
 }
 
 type TimedTask struct {
 	Id          cron.EntryID
 	Prev        time.Time
 	Next        time.Time
+	Name        string
 	Description string
 }
 
 type Timer struct {
 	cronTimer *cron.Cron
 	tasks     map[cron.EntryID]TimedTask
+	logger    Logger
 }
 
 func NewTimer() Timer {
+
 	timer := Timer{
 		cronTimer: cron.New(),
 		tasks:     map[cron.EntryID]TimedTask{},
+		logger:    NewLogger(),
 	}
 
 	return timer
 }
 
-func (timer Timer) AddTask(schedule cron.Schedule, job func(), description string) {
-	entryId := timer.cronTimer.Schedule(schedule, cron.FuncJob(job))
+func (timer Timer) AddDisposableTask(schedule Schedule, job cron.Job, name, description string) cron.EntryID {
+	disJob, callback := NewCallbackJob(job)
+	entryId := timer.AddTask(schedule, disJob, name, description)
+	callback(func() {
+		timer.cronTimer.Remove(entryId)
+	})
+
+	return entryId
+}
+
+func (timer Timer) AddTask(schedule Schedule, job cron.Job, name, description string) cron.EntryID {
+	if schedule.DoFirst {
+		job.Run()
+		if !schedule.IsSilent {
+			timer.logger.Info(fmt.Sprintf("-=%s(%s)=- execution finished, next execution time: %s", name, description, schedule.Next(time.Now()).Format(time.RFC3339)))
+		}
+	}
+
+	cbJob, callback := NewCallbackJob(job)
+	entryId := timer.cronTimer.Schedule(schedule, cbJob)
 	task := TimedTask{
 		Id:          entryId,
+		Name:        name,
 		Description: description,
 	}
 	timer.tasks[entryId] = task
+
+	if !schedule.IsSilent {
+		callback(func() {
+			task := timer.GetTask(entryId)
+			timer.logger.Info(fmt.Sprintf("-=%s(%s)=- execution finished, next execution time: %s", task.Name, task.Description, task.Next.Format(time.RFC3339)))
+		})
+	}
+
+	return entryId
 }
 
 func (timer Timer) GetTask(id cron.EntryID) TimedTask {
@@ -71,7 +105,8 @@ func (timer Timer) GetTasks() []TimedTask {
 	return tasks
 }
 
-func (timer Timer) Remove(id cron.EntryID) {
+func (timer *Timer) Remove(id cron.EntryID) {
+	delete(timer.tasks, id)
 	timer.cronTimer.Remove(id)
 }
 
