@@ -1,29 +1,10 @@
 package timer
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/robfig/cron/v3"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
-
-type Logger interface {
-	Info(args ...interface{})
-}
-
-func NewLogger() *zap.SugaredLogger {
-	config := zap.NewProductionConfig()
-	config.Encoding = "console"
-	config.EncoderConfig.CallerKey = ""
-	config.EncoderConfig.StacktraceKey = ""
-	config.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
-	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	l, _ := config.Build()
-
-	return l.Sugar()
-}
 
 type TimedTask struct {
 	Id          cron.EntryID
@@ -36,7 +17,6 @@ type TimedTask struct {
 type Timer struct {
 	cronTimer *cron.Cron
 	tasks     map[cron.EntryID]TimedTask
-	logger    Logger
 }
 
 func NewTimer() Timer {
@@ -44,7 +24,6 @@ func NewTimer() Timer {
 	timer := Timer{
 		cronTimer: cron.New(),
 		tasks:     map[cron.EntryID]TimedTask{},
-		logger:    NewLogger(),
 	}
 
 	return timer
@@ -63,26 +42,15 @@ func (timer Timer) AddDisposableTask(schedule Schedule, job cron.Job, name, desc
 func (timer Timer) AddTask(schedule Schedule, job cron.Job, name, description string) cron.EntryID {
 	if schedule.DoFirst {
 		job.Run()
-		if !schedule.IsSilent {
-			timer.logger.Info(fmt.Sprintf("-=%s(%s)=- execution finished, next execution time: %s", name, description, schedule.Next(time.Now()).Format(time.RFC3339)))
-		}
 	}
 
-	cbJob, callback := NewCallbackJob(job)
-	entryId := timer.cronTimer.Schedule(schedule, cbJob)
+	entryId := timer.cronTimer.Schedule(schedule, job)
 	task := TimedTask{
 		Id:          entryId,
 		Name:        name,
 		Description: description,
 	}
 	timer.tasks[entryId] = task
-
-	if !schedule.IsSilent {
-		callback(func() {
-			task := timer.GetTask(entryId)
-			timer.logger.Info(fmt.Sprintf("-=%s(%s)=- execution finished, next execution time: %s", task.Name, task.Description, task.Next.Format(time.RFC3339)))
-		})
-	}
 
 	return entryId
 }
@@ -92,6 +60,9 @@ func (timer Timer) GetTask(id cron.EntryID) TimedTask {
 	task := timer.tasks[id]
 	task.Prev = entry.Prev
 	task.Next = entry.Next
+	if entry.Next.IsZero() {
+		task.Next = entry.Schedule.Next(time.Now())
+	}
 
 	return task
 }

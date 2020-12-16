@@ -9,7 +9,6 @@ import (
 type Schedule struct {
 	schedule cron.Schedule
 	DoFirst  bool
-	IsSilent bool
 }
 
 func NewSchedule(schedule cron.Schedule) Schedule {
